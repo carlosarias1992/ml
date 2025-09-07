@@ -1,104 +1,110 @@
 import torch
 import numpy as np
-import pygame
+import time
+import json
+import argparse
+from rlgym_ppo.ppo.discrete_policy import DiscreteFF
 
 # Local imports
-from config import Config
-from agent import PPOAgent
-from env import create_rlgym_env_factory, TorchVecNormalize
+from env import build_rlgym_env
 from utils import set_seed
+from config import Config
+from utils import find_latest_file_path
 
 
 def main():
     """Main function to load the model and run the bot."""
+    # --- Argument Parsing for specifying the stage ---
+    parser = argparse.ArgumentParser(description="Run a trained RLGym PPO agent.")
+    parser.add_argument("--stage", type=int, default=1, help="The training stage of the model to load.")
+    args = parser.parse_args()
+
     cfg = Config()
-    
-    # --- 1. Setup ---
+
     set_seed(cfg.SEED)
 
-    # Device setup
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print("🎮 Using NVIDIA CUDA")
-    elif torch.backends.mps.is_available() and cfg.USE_MPS:
-        device = torch.device("mps")
-        print("🍎 Using Apple Silicon MPS")
-    else:
-        device = torch.device("cpu")
-        print("💻 Using CPU")
-        
-    # --- 2. Environment Creation ---
-    print("🏗️ Creating environment for playing...")
-    # Use a single, non-vectorized environment for evaluation
-    eval_env_factory = create_rlgym_env_factory(cfg.NUM_AGENTS_PER_ENV, render_mode="human")
-    eval_env = eval_env_factory()
-    agent_keys = list(eval_env.observation_space.spaces.keys())
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() and cfg.USE_MPS else "cpu")
+    print(f"🎮 Using device: {device}")
 
-    # --- 3. Agent Initialization ---
-    print("🧠 Initializing neural network...")
-    first_agent_key = next(iter(eval_env.observation_space.spaces))
-    single_agent_obs_shape = eval_env.observation_space.spaces[first_agent_key].shape
-    action_space_n = eval_env.action_space.spaces[first_agent_key].n
-    
-    agent = PPOAgent(single_agent_obs_shape, action_space_n, device, cfg)
+    print(f"🏗️  Creating environment for playing (Stage {args.stage})...")
+    # --- Pass the stage argument to the environment builder ---
+    eval_env = build_rlgym_env(render_mode="human", spawn_opponents=True, stage=args.stage)
 
-    # --- 4. Load Model ---
     try:
-        model_path = f"models/{cfg.EXP_NAME}_{cfg.SEED}_*/best_model.pt"
-        # FIX: Glob to find the latest model in case the timestamp changes
-        import glob
-        latest_model = glob.glob(model_path)
-        if not latest_model:
-            raise FileNotFoundError("No model found. Please train the agent first.")
+        # --- Find the model directory for the specified stage ---
+        stage_config = cfg.STAGES.get(args.stage)
+        if not stage_config:
+            raise ValueError(f"Stage {args.stage} not found in config.py")
+
+        exp_name = f"{cfg.EXP_NAME}__{stage_config['EXP_NAME_SUFFIX']}"
+
+        model_path = find_latest_file_path(exp_name, "PPO_POLICY.pt")
+        bookkeeping_path = find_latest_file_path(exp_name, "BOOK_KEEPING_VARS.json")
+
+        print(f"🧠 Loading latest model from {model_path}...")
+        print(f"📖 Reading runtime stats from {bookkeeping_path}...")
+
+        with open(bookkeeping_path, 'r') as f:
+            bookkeeping_data = json.load(f)
+
+        obs_size = bookkeeping_data["obs_running_stats"]["shape"][0]
+        act_size = eval_env.action_space.n
         
-        agent.policy.load_state_dict(torch.load(latest_model[0]))
-        print(f"✅ Successfully loaded model from {latest_model[0]}")
-    except FileNotFoundError as e:
-        print(f"❌ Error: {e}")
+        policy_layer_sizes = stage_config["POLICY_LAYER_SIZES"]
+        print(f"🧠 Using architecture from config for Stage {args.stage}: {policy_layer_sizes}")
+
+        policy = DiscreteFF(obs_size, act_size, policy_layer_sizes, device)
+
+        model_state_dict = torch.load(model_path, map_location=device)
+
+        policy.load_state_dict(model_state_dict)
+        policy.eval()
+
+        print("✅ Successfully loaded model.")
+
+    except Exception as e:
+        print(f"❌ Error loading model: {e}")
         eval_env.close()
         return
 
-    # --- 5. Play Loop ---
     print("\n🚀 Starting bot play!")
     print("Press the 'x' button on the window or Ctrl+C in the terminal to stop.")
-    
-    # Set the policy to evaluation mode
-    agent.policy.eval()
-    
+
+    SIMULATION_FPS = 15
+    SIMULATION_TIME_STEP = 1 / SIMULATION_FPS
+    last_sim_time = time.perf_counter()
+
     try:
-        # Loop to play episodes until the user closes the window
-        obs_dict, _ = eval_env.reset()
-        
+        obs = eval_env.reset()
+
         while True:
-            # Handle Pygame window events to allow for closing
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    raise KeyboardInterrupt
-            
-            # Create a batch of observations for this single environment state
-            obs_tensors = [torch.tensor(obs_dict[key], dtype=torch.float32, device=device).unsqueeze(0) for key in agent_keys]
-            flat_obs = torch.cat(obs_tensors, dim=1)
+            current_time = time.perf_counter()
+            if current_time - last_sim_time >= SIMULATION_TIME_STEP:
+                last_sim_time = current_time
 
-            # Get actions from the policy
-            with torch.no_grad():
-                actions_tensor, _, _, _ = agent.policy.get_action_and_value(flat_obs)
-            
-            # Format actions for the environment
-            actions_to_send = {key: np.array([actions_tensor[0, i].item()]) for i, key in enumerate(agent_keys)}
+                with torch.no_grad():
+                    if obs.ndim == 1:
+                        obs = np.expand_dims(obs, axis=0)
 
-            # Step the environment
-            obs_dict, rewards, terminated, truncated, _ = eval_env.step(actions_to_send)
-            
-            # Check for episode termination
-            done = any(terminated.values()) or any(truncated.values())
-            
-            # Render the environment
+                    agent_actions = []
+                    for agent_obs in obs:
+                        obs_tensor = torch.from_numpy(agent_obs).float().to(device)
+                        obs_tensor = obs_tensor.unsqueeze(0)
+
+                        action_tensor, _ = policy.get_action(obs_tensor, deterministic=True)
+                        
+                        action = action_tensor.squeeze().item()
+                        agent_actions.append([action])
+
+                    actions_to_send = np.array(agent_actions).reshape(-1, 1)
+                                            
+                    obs, _, terminated, truncated, _ = eval_env.step(actions_to_send)
+                    
+                    if terminated or truncated:
+                        obs = eval_env.reset()
+
             eval_env.render()
-            
-            # If the episode is done, reset the environment
-            if done:
-                obs_dict, _ = eval_env.reset()
-            
+
     except KeyboardInterrupt:
         print("\n✅ User interrupted. Stopping.")
     finally:

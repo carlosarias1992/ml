@@ -17,6 +17,8 @@ fsspec==2025.9.0
 gitdb==4.0.12
 GitPython==3.1.45
 grpcio==1.74.0
+gym==0.26.2
+gym-notices==0.0.8
 gymnasium==1.2.0
 h11==0.16.0
 idna==3.10
@@ -50,7 +52,9 @@ requirements-parser==0.13.0
 rlbot==1.68.0
 rlgym==2.0.1
 rlgym-api==2.0.0
+rlgym-ppo @ git+https://github.com/AechPro/rlgym-ppo@4ffd2e924198bf4b2d59f4bf280b29919d7c07ea
 rlgym-rocket-league==2.0.1
+rlgym_tools==2.3.10
 rlviser-py==0.6.10
 RocketSim==2.1.1.post1
 selenium==4.35.0

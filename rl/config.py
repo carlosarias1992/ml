@@ -1,47 +1,64 @@
 class Config:
-    # --- Experiment ---
-    EXP_NAME = "RLGym_PPO_Refactored"
-    SEED = 42
-    TORCH_DETERMINISTIC = True
-    USE_MPS = True # Use Apple Silicon GPU if available
+    """
+    Configuration class for PPO training hyperparameters.
+    """
+    def __init__(self):
+        self.SEED = 42
+        self.EXP_NAME = "RLGym_PPO_SSL3" # Base name for the experiment
+        
+        # --- WandB Logging ---
+        self.WANDB_LOG = True 
+        self.WANDB_PROJECT_NAME = "rlgym-ppo-ssl-curriculum-3"
 
-    # --- Environment ---
-    NUM_ENVS = 32  # Number of parallel environments
-    NUM_AGENTS_PER_ENV = 2 # e.g., 1v1 would be 2 agents
-    TOTAL_AGENTS_PER_ENV = NUM_AGENTS_PER_ENV # For clarity in storage calculations
+        # --- System ---
+        self.USE_MPS = True 
+        self.USE_AMP = True 
 
-    # --- PPO ---
-    TOTAL_TIMESTEPS = 10_000_000
-    NUM_STEPS = 512  # Steps per environment per policy rollout
-    ANNEAL_LR = True
-    LEARNING_RATE = 2.5e-4
-    NUM_UPDATE_EPOCHS = 4
-    NUM_MINIBATCHES = 4
-    UPDATE_BATCH_SIZE = NUM_ENVS * NUM_STEPS
-    MINIBATCH_SIZE = UPDATE_BATCH_SIZE // NUM_MINIBATCHES
-    GAMMA = 0.99
-    GAE_LAMBDA = 0.95
-    CLIP_COEF = 0.2
-    ENT_COEF = 0.01
-    VF_COEF = 0.5
-    MAX_GRAD_NORM = 0.5
-    NORMALIZE_ADVANTAGES = True
-    TARGET_KL = None # 0.015 is a good starting value if you want to use it
+        # --- PPO Hyperparameters (can be overridden by stages) ---
+        self.GAMMA = 0.99 
+        self.GAE_LAMBDA = 0.95 
+        self.CLIP_COEF = 0.2 
+        self.ENT_COEF = 0.01 
+        self.VF_COEF = 0.5 
+        self.MAX_GRAD_NORM = 0.5 
+        self.NORM_ADV = True 
+        self.CLIP_VLOSS = True 
 
-    # --- Network ---
-    POLICY_HIDDEN_LAYERS = [256, 256]
-    VALUE_HIDDEN_LAYERS = [256, 256]
+        # --- MODIFIED: Environment & Training Defaults for Faster Learning ---
+        self.NUM_ENVS = 64
+        self.NUM_STEPS = 2048
+        self.ANNEAL_LR = True 
+        self.NUM_UPDATE_EPOCHS = 8
+        self.NUM_MINIBATCHES = 4
+        self.SAVE_MODEL = True
+        
+        # --- Calculated values (do not change) ---
+        self.BATCH_SIZE = self.NUM_ENVS * self.NUM_STEPS
+        self.MINIBATCH_SIZE = self.BATCH_SIZE // self.NUM_MINIBATCHES
 
-    # --- Logging & Saving ---
-    SAVE_MODEL = True
-    EVAL_INTERVAL = 50  # Number of updates between evaluations
-    EVAL_EPISODES = 10 # Number of episodes to run for each evaluation
-
-    # Weights & Biases
-    WANDB_LOG = True
-    WANDB_PROJECT_NAME = "rlgym-ppo"
-    WANDB_ENTITY = None # wandb entity name (e.g., username)
-
-    # --- Computed values ---
-    BATCH_SIZE = int(NUM_ENVS * NUM_STEPS)
-    TOTAL_AGENTS = NUM_ENVS * TOTAL_AGENTS_PER_ENV
+        # --- CURRICULUM LEARNING STAGES ---
+        # The policy/critic sizes are kept consistent across all stages
+        # to ensure seamless loading from one stage to the next.
+        self.STAGES = {
+            1: {
+                "EXP_NAME_SUFFIX": "Stage1_Touch",
+                "TOTAL_TIMESTEPS": 1_000_000_000,
+                "LEARNING_RATE": 3e-4,
+                "POLICY_LAYER_SIZES": [1024, 1024, 512],
+                "CRITIC_LAYER_SIZES": [1024, 1024, 512],
+            },
+            2: {
+                "EXP_NAME_SUFFIX": "Stage2_Dribble",
+                "TOTAL_TIMESTEPS": 2_000_000_000,
+                "LEARNING_RATE": 1e-4,
+                "POLICY_LAYER_SIZES": [1024, 1024, 512],
+                "CRITIC_LAYER_SIZES": [1024, 1024, 512],
+            },
+            3: {
+                "EXP_NAME_SUFFIX": "Stage3_FullMechanics",
+                "TOTAL_TIMESTEPS": 5_000_000_000,
+                "LEARNING_RATE": 5e-5,
+                "POLICY_LAYER_SIZES": [1024, 1024, 512],
+                "CRITIC_LAYER_SIZES": [1024, 1024, 512],
+            }
+        }
